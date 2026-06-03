@@ -7,3 +7,6 @@ coverage.*
 .idea/
 .vscode/
 .DS_Store
+evolution-go
+server
+*.exe
