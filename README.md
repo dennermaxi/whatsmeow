@@ -1,265 +1,67 @@
-<p align="center">
-  <a href="https://evolutionfoundation.com.br">
-    <img src="./public/hover-evolution.png" alt="Evolution Foundation" />
-  </a>
-</p>
+# RProducerWA
 
-<h1 align="center">Evolution Go</h1>
+WhatsApp HTTP gateway do RProducer — **fork do projeto open-source [Evolution Go](https://github.com/EvolutionAPI/evolution-go)** com modificações específicas pro stack do RProducer.
 
-<p align="center">
-  High-performance WhatsApp API built in Go — part of the Evolution Foundation ecosystem.
-</p>
-
-<p align="center">
-  <a href="https://github.com/evolution-foundation/evolution-go/releases/latest"><img src="https://img.shields.io/github/v/release/evolution-foundation/evolution-go?include_prereleases&label=version&color=00ffa7" alt="Latest version" /></a>
-  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0" /></a>
-  <a href="https://docs.evolutionfoundation.com.br"><img src="https://img.shields.io/badge/Docs-evolutionfoundation.com.br-00ffa7" alt="Documentation" /></a>
-  <a href="https://evolutionfoundation.com.br/community"><img src="https://img.shields.io/badge/Community-Join%20us-white" alt="Community" /></a>
-  <a href="https://hub.docker.com/r/evoapicloud/evolution-go"><img src="https://img.shields.io/badge/Docker-evoapicloud-blue" alt="Docker image" /></a>
-</p>
-
-<p align="center">
-  <a href="https://evolutionfoundation.com.br">Website</a> &middot;
-  <a href="https://docs.evolutionfoundation.com.br">Documentation</a> &middot;
-  <a href="https://evolutionfoundation.com.br/community">Community</a> &middot;
-  <a href="mailto:suporte@evofoundation.com.br">Support</a>
-</p>
-
+> ⚠️ Este é um fork independente. Não é endossado pela Evolution Foundation. O upstream Evolution Go é distribuído sob Apache License 2.0 com restrições de trademark — ver [`LICENSE`](./LICENSE) e [`TRADEMARKS.md`](./TRADEMARKS.md).
 
 ---
 
-## About
+## Por que esse fork existe?
 
-**Evolution Go** is a high-performance WhatsApp API built in Go. Part of the Evolution Foundation ecosystem, it provides a robust, lightweight solution for WhatsApp integration using the [whatsmeow](https://github.com/tulir/whatsmeow) library.
+O RProducer roda o Evolution Go como ponte HTTP→whatsmeow pra todas as instâncias WhatsApp dos clientes. Durante uso em prod descobrimos 2 gaps no upstream que impactavam diretamente:
 
-## Part of the Evolution Foundation ecosystem
+1. **Race condition no WebSocket producer.** A `gorilla/websocket` não é thread-safe pra writes concorrentes. Em prod 2+ goroutines chamando `WriteJSON` na mesma conn quebravam a conexão.
+2. **Sem endpoint pra resolver LID → JID real.** O whatsmeow tem `LIDStore.GetPNForLID()` internamente, mas o Evolution Go não expõe via HTTP. Resultado: sync histórico do CRM caía em órfãos `@lid` sem como resolver.
 
-Evolution Go is one of the messaging engines maintained by Evolution Foundation. It is used as a WhatsApp provider by the [Evo CRM Community](https://github.com/evolution-foundation/evo-crm-community) and other projects in the ecosystem.
+Em vez de manter patches in-tree na imagem Docker (que era frágil — usávamos a tag `0.7.1-rproducer-mutex` direto do upstream), centralizamos as modificações nesse fork, com **CI próprio + Docker Hub próprio**. Permite rebase ordenado com upstream a cada release.
 
----
+## Modificações em relação ao upstream
 
-## Features
+Veja [`RPRODUCER-CHANGES.md`](./RPRODUCER-CHANGES.md) pra catálogo completo.
 
-- **High performance** — built with Go for minimal resource usage
-- **RESTful API** — clean, well-documented REST endpoints with Swagger
-- **Real-time events** — WebSocket, Webhook, AMQP/RabbitMQ and NATS support
-- **Media support** — images, videos, audio, documents with MinIO/S3 storage
-- **Message storage** — optional PostgreSQL persistence
-- **QR code pairing** — built-in QR code generation for device linking
-- **License management** — built-in licensing with registration, activation, and heartbeat
-- **Docker ready** — production-ready Docker configuration
+| Mudança | Arquivos | Motivo |
+|---|---|---|
+| `safeConn` wrapper (mutex em writes) | `pkg/events/websocket/websocket_producer.go` | Race condition gorilla/websocket |
+| `POST /chat/resolveLid` | `pkg/chat/{handler,service}/`, `pkg/routes/routes.go` | Expor LIDStore do whatsmeow |
+| Branding RProducer | `README.md`, `TRADEMARKS.md`, Docker tag | Não usar marca "Evolution" |
 
----
+Todo o resto é idêntico ao upstream — o objetivo é manter rebase trivial.
 
-## Quick Start
+## Stack / Como buildar
 
-### Docker (recommended)
+Pré-requisitos: Docker (build multi-stage com `golang:1.25-alpine`).
 
 ```bash
-git clone https://github.com/evolution-foundation/evolution-go.git
-cd evolution-go
-make docker-build
-make docker-run
+# Build local pra teste
+docker build --platform linux/amd64 -t local/rproducer-wa:dev .
+
+# Build + push pra Docker Hub (faz via CI ou manual)
+docker buildx build --platform linux/amd64 \
+  -t dennermaxi/rproducer-wa:v0.7.1-rwa-1 \
+  -t dennermaxi/rproducer-wa:latest \
+  --push .
 ```
 
-### Local development
+A imagem final tem ~80MB (alpine + binário Go estático + ffmpeg + libwebp).
 
-```bash
-git clone https://github.com/evolution-foundation/evolution-go.git
-cd evolution-go
+## Deploy
 
-# Clone whatsmeow dependency
-git clone git@github.com:evolution-foundation/whatsmeow.git whatsmeow-lib
+Imagem em [`dennermaxi/rproducer-wa`](https://hub.docker.com/r/dennermaxi/rproducer-wa) no Docker Hub.
 
-# Setup, configure and run
-make setup
-cp .env.example .env
-make dev
-```
+Em prod o RProducer roda como stack no EasyPanel (`evolution-evolution-go.sekraw.easypanel.host`). Trocar a tag da imagem no painel pra deployar nova versão.
 
-> Run `make help` to see all available commands. See [COMMANDS.md](./COMMANDS.md) for detailed workflows.
+## Como sincronizar com upstream
 
----
+Veja [`UPSTREAM-SYNC.md`](./UPSTREAM-SYNC.md) pro processo passo-a-passo (~10min por release upstream).
 
-## Configuration
+## Versionamento
 
-Create a `.env` file:
+Tag: `vX.Y.Z-rwa-N` onde:
+- `X.Y.Z` = versão do upstream Evolution Go que servimos como base
+- `N` = número incremental das modificações RProducer em cima dessa base
 
-```env
-# Server
-SERVER_PORT=8080
-CLIENT_NAME=evolution
+Exemplo: `v0.7.1-rwa-1` = primeiro release nosso baseado no upstream 0.7.1.
 
-# Security
-GLOBAL_API_KEY=your-secure-api-key-here
+## Licença
 
-# Database
-POSTGRES_AUTH_DB=postgresql://postgres:password@localhost:5432/evogo_auth?sslmode=disable
-POSTGRES_USERS_DB=postgresql://postgres:password@localhost:5432/evogo_users?sslmode=disable
-DATABASE_SAVE_MESSAGES=false
-
-# Logging
-WADEBUG=DEBUG
-LOGTYPE=console
-
-# Optional
-# AMQP_URL=amqp://guest:guest@localhost:5672/
-# NATS_URL=nats://localhost:4222
-# WEBHOOK_URL=https://your-webhook-url.com/webhook
-# MINIO_ENABLED=true
-# MINIO_ENDPOINT=localhost:9000
-# MINIO_ACCESS_KEY=minioadmin
-# MINIO_SECRET_KEY=minioadmin
-```
-
-| Variable | Description | Default |
-|---|---|---|
-| `SERVER_PORT` | Server port | `8080` |
-| `CLIENT_NAME` | Client identifier | `evolution` |
-| `GLOBAL_API_KEY` | API authentication key | **Required** |
-| `DATABASE_SAVE_MESSAGES` | Enable message storage | `false` |
-| `WADEBUG` | WhatsApp debug level | `INFO` |
-
----
-
-## License Activation
-
-Evolution Go requires a license to operate. On first run:
-
-1. Start the server — API endpoints return `503` until activated
-2. Open the **Manager** at `http://localhost:8080/manager/login`
-3. Enter your API URL and `GLOBAL_API_KEY`
-4. Complete the license registration flow
-5. Once activated, the API is fully operational
-
-The license status persists in the database (`runtime_configs` table). Heartbeats are sent periodically to maintain activation.
-
----
-
-## API Documentation
-
-Swagger UI available at:
-
-```
-http://localhost:8080/swagger/index.html
-```
-
-### Key Endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `POST` | `/instance/create` | Create WhatsApp instance |
-| `GET` | `/instance/{name}/qrcode` | Get QR code for pairing |
-| `POST` | `/message/sendText` | Send text message |
-| `POST` | `/message/sendMedia` | Send media message |
-| `GET` | `/instance/{name}/status` | Get instance status |
-| `DELETE` | `/instance/{name}` | Delete instance |
-
----
-
-## Project Structure
-
-```
-evolution-go/
-├── cmd/evolution-go/     # Application entry point
-├── pkg/
-│   ├── core/            # License management & middleware
-│   ├── instance/        # Instance management
-│   ├── message/         # Message handling
-│   ├── sendMessage/     # Message sending
-│   ├── routes/          # HTTP routes
-│   ├── middleware/      # Auth & validation middleware
-│   ├── config/          # Configuration
-│   ├── events/          # Event producers (AMQP, NATS, Webhook, WS)
-│   └── storage/         # Media storage (MinIO)
-├── whatsmeow-lib/       # WhatsApp protocol library
-├── docs/                # Swagger documentation
-├── Dockerfile
-├── Makefile
-└── VERSION
-```
-
----
-
-## Tech Stack
-
-| Component | Technology |
-|---|---|
-| Language | Go 1.24+ |
-| HTTP framework | Gin |
-| WhatsApp | [whatsmeow](https://github.com/tulir/whatsmeow) |
-| Database | PostgreSQL |
-| ORM | GORM |
-| Message queue | RabbitMQ, NATS |
-| Object storage | MinIO/S3 |
-| Documentation | Swagger/OpenAPI |
-| Container | Docker |
-
----
-
-## Documentation
-
-| Resource | Link |
-|---|---|
-| Website | [evolutionfoundation.com.br](https://evolutionfoundation.com.br) |
-| Documentation | [docs.evolutionfoundation.com.br](https://docs.evolutionfoundation.com.br) |
-| Community | [evolutionfoundation.com.br/community](https://evolutionfoundation.com.br/community) |
-| Docker Hub | [evoapicloud/evolution-go](https://hub.docker.com/r/evoapicloud/evolution-go) |
-| Changelog | [CHANGELOG.md](./CHANGELOG.md) |
-| Contributing | [CONTRIBUTING.md](./CONTRIBUTING.md) |
-| Security | [SECURITY.md](./SECURITY.md) |
-
----
-
-## Hosting
-
-Deploy Evolution Go with optimized infrastructure through our HostGator partnership:
-
-[**Evolution Go VPS — HostGator**](https://evolution-api.com/vps-evolution-go)
-
----
-
-## Telemetry
-
-Evolution Go collects anonymous telemetry data (routes used, API version) to help improve the service. **No sensitive or personal data is collected.**
-
----
-
-## Contributing
-
-Contributions are welcome! Please read [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines on how to submit issues, propose features, and open pull requests.
-
-Join our [community](https://evolutionfoundation.com.br/community) to discuss ideas and collaborate.
-
----
-
-## Security
-
-For security issues, **do not open a public issue**. Email **suporte@evofoundation.com.br** or use GitHub's private vulnerability reporting. See [SECURITY.md](./SECURITY.md) for details.
-
----
-
-## Acknowledgments
-
-- [whatsmeow](https://github.com/tulir/whatsmeow) by [Tulir Asokan](https://github.com/tulir) — WhatsApp protocol library
-- [Evolution API](https://github.com/evolution-foundation/evolution-api) — Node.js sister project
-
----
-
-## License
-
-Evolution Go is licensed under the Apache License 2.0, with additional brand-protection conditions (LOGO/copyright preservation and Usage Notification requirement). See [LICENSE](./LICENSE) for full details.
-
-For licensing inquiries, contact **suporte@evofoundation.com.br**.
-
-## Trademarks
-
-"Evolution Foundation", "Evolution" and "Evolution Go" are trademarks of Evolution Foundation. See [TRADEMARKS.md](./TRADEMARKS.md) for the brand assets policy.
-
-Third-party attributions are documented in [NOTICE](./NOTICE).
-
----
-
-<p align="center">
-  Made by <a href="https://evolutionfoundation.com.br">Evolution Foundation</a> · © 2026
-</p>
+Apache 2.0 (herdado do upstream, ver [`LICENSE`](./LICENSE)). Marcas "Evolution", "Evolution Foundation" e "Evolution Go" permanecem propriedade da Evolution Foundation — não usamos no nome do produto/imagem.

@@ -3,6 +3,7 @@ package chat_service
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	instance_model "github.com/EvolutionAPI/evolution-go/pkg/instance/model"
@@ -22,6 +23,9 @@ type ChatService interface {
 	ChatMute(data *BodyStruct, instance *instance_model.Instance) (string, error)
 	ChatUnmute(data *BodyStruct, instance *instance_model.Instance) (string, error)
 	HistorySyncRequest(data *HistorySyncRequestStruct, instance *instance_model.Instance) (*whatsmeow.SendResponse, error)
+	// [RPRODUCER] ResolveLid — expõe o LIDStore interno do whatsmeow via HTTP.
+	// Recebe um JID @lid e retorna o JID real @s.whatsapp.net (ou vazio se desconhecido).
+	ResolveLid(data *ResolveLidStruct, instance *instance_model.Instance) (*ResolveLidResponse, error)
 }
 
 type chatService struct {
@@ -37,6 +41,18 @@ type BodyStruct struct {
 type HistorySyncRequestStruct struct {
 	MessageInfo *types.MessageInfo `json:"messageInfo"`
 	Count       int                `json:"count"`
+}
+
+// [RPRODUCER] Request body de POST /chat/resolveLid
+type ResolveLidStruct struct {
+	Lid string `json:"lid"` // ex: "116419450638400@lid" ou só "116419450638400"
+}
+
+// [RPRODUCER] Response body de POST /chat/resolveLid
+type ResolveLidResponse struct {
+	Lid   string `json:"lid"`   // o LID que foi consultado (normalizado)
+	Pn    string `json:"pn"`    // JID real (@s.whatsapp.net) ou string vazia se não achou
+	Found bool   `json:"found"` // true se o mapping existe no LIDStore do whatsmeow
 }
 
 func (c *chatService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
@@ -241,6 +257,55 @@ func (c *chatService) HistorySyncRequest(data *HistorySyncRequestStruct, instanc
 	}
 
 	return &res, nil
+}
+
+// [RPRODUCER] ResolveLid — chama client.Store.LIDs.GetPNForLID()
+// ----------------------------------------------------------------
+// Pattern: o whatsmeow mantém internamente uma LIDStore (em SQLite/Postgres
+// dependendo do storage configurado). A store é populada sempre que o
+// whatsmeow recebe mensagens onde tanto SenderAlt quanto Sender estão
+// presentes (ou via outros caminhos como GroupParticipant).
+//
+// Esse endpoint é um lookup local (sem ida pra rede), idempotente, super rápido.
+// O cliente CRM usa pra resolver LIDs órfãos que vieram de sync histórico
+// quando a store ainda não tinha o mapping.
+func (c *chatService) ResolveLid(data *ResolveLidStruct, instance *instance_model.Instance) (*ResolveLidResponse, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return nil, err
+	}
+
+	// Aceita "X@lid" ou só "X" — normaliza pra JID
+	lidStr := data.Lid
+	if !strings.Contains(lidStr, "@") {
+		lidStr = lidStr + "@lid"
+	}
+	lidJID, err := types.ParseJID(lidStr)
+	if err != nil {
+		return nil, errors.New("lid inválido: " + err.Error())
+	}
+	if lidJID.Server != "lid" {
+		return nil, errors.New("JID precisa ser @lid (recebido: " + lidJID.Server + ")")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	pnJID, err := client.Store.LIDs.GetPNForLID(ctx, lidJID)
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] GetPNForLID erro lid=%s: %v", instance.Id, lidStr, err)
+		return nil, err
+	}
+
+	resp := &ResolveLidResponse{Lid: lidStr}
+	if pnJID.IsEmpty() {
+		resp.Found = false
+		resp.Pn = ""
+	} else {
+		resp.Found = true
+		resp.Pn = pnJID.String()
+	}
+	return resp, nil
 }
 
 func NewChatService(

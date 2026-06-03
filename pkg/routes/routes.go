@@ -168,6 +168,8 @@ func (r *Routes) AssignRoutes(eng *gin.Engine) {
 			routes.POST("/mute", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatMute)           // TODO: not working
 			routes.POST("/unmute", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatUnmute)       // TODO: not working
 			routes.POST("/history-sync", r.chatHandler.HistorySyncRequest)
+			// [RPRODUCER] LID → PN resolver — expõe LIDStore do whatsmeow
+			routes.POST("/resolveLid", r.chatHandler.ResolveLid)
 		}
 	}
 	routes = eng.Group("/group")

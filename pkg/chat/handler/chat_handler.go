@@ -16,6 +16,8 @@ type ChatHandler interface {
 	ChatMute(ctx *gin.Context)
 	ChatUnmute(ctx *gin.Context)
 	HistorySyncRequest(ctx *gin.Context)
+	// [RPRODUCER] LID → PN resolver (proxy pro LIDStore interno do whatsmeow)
+	ResolveLid(ctx *gin.Context)
 }
 
 type chatHandler struct {
@@ -320,6 +322,49 @@ func (c *chatHandler) HistorySyncRequest(ctx *gin.Context) {
 	}
 
 	resp, err := c.chatService.HistorySyncRequest(data, instance)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": resp})
+}
+
+// [RPRODUCER] ResolveLid handler
+// @Summary Resolve a LID to phone-number JID
+// @Description Lookup local no LIDStore do whatsmeow. Retorna o JID real
+// @Description (@s.whatsapp.net) correspondente ao LID consultado, ou found=false
+// @Description se o whatsmeow ainda não viu esse mapping.
+// @Tags Chat
+// @Accept json
+// @Produce json
+// @Param message body chat_service.ResolveLidStruct true "LID a resolver"
+// @Success 200 {object} gin.H "success"
+// @Failure 400 {object} gin.H "Erro de validação"
+// @Failure 500 {object} gin.H "Erro interno"
+// @Router /chat/resolveLid [post]
+func (c *chatHandler) ResolveLid(ctx *gin.Context) {
+	getInstance := ctx.MustGet("instance")
+
+	instance, ok := getInstance.(*instance_model.Instance)
+	if !ok {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
+		return
+	}
+
+	var data *chat_service.ResolveLidStruct
+	err := ctx.ShouldBindBodyWithJSON(&data)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if data == nil || data.Lid == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "lid is required"})
+		return
+	}
+
+	resp, err := c.chatService.ResolveLid(data, instance)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
