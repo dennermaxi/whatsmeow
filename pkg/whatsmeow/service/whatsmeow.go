@@ -2182,16 +2182,20 @@ func contains(subscriptions []string, event string) bool {
 }
 
 func (w *whatsmeowService) sendToQueueOrWebhook(instance *instance_model.Instance, queueName string, jsonData []byte) {
-	// [RPRODUCER] hook: filtro + dedup + envelope override + queue override.
-	// Tudo zero-overhead se nenhuma env var RPRODUCER_* estiver setada.
-	// Ver pkg/rproducer/intercept.go pra detalhes.
-	res := rproducer.Intercept(queueName, jsonData)
-	if !res.ShouldSend {
-		return
-	}
-	queueName = res.QueueName
-	jsonData = res.JSONData
-
+	// [RPRODUCER] IMPORTANTE: NÃO chamar rproducer.Intercept aqui.
+	//
+	// Esta função é o publish PER-INSTANCE (RabbitMQ por-instância, NATS, WebSocket
+	// interno do CRM, Webhook). Esses destinos esperam o envelope NATIVO do whatsmeow
+	// e não devem ser dedupados (cada evento deve chegar a cada destino).
+	//
+	// O Intercept (filter/dedup/envelope/queue override) é chamado APENAS em
+	// SendToGlobalQueues abaixo, que é o publish que vai pro Agent via
+	// rproducer-messages.upsert. Lá faz sentido dedupar/transformar.
+	//
+	// BUG histórico (pre-rwa-6): Intercept rodava aqui também, registrava msg_id no
+	// dedup cache, e quando SendToGlobalQueues chamava Intercept de novo, o dedup
+	// achava a duplicata e FILTRAVA o publish global. Resultado: Agent não recebia
+	// mensagem nenhuma de instâncias com publish per-instance ativo.
 	if instance.RabbitmqEnable == "enabled" || instance.RabbitmqEnable == "true" {
 		err := w.rabbitmqProducer.Produce(queueName, jsonData, instance.RabbitmqEnable, instance.Id)
 		if err != nil {

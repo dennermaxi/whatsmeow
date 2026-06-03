@@ -204,6 +204,31 @@ if strings.Contains(evt.Info.Sender.String(), "@lid") || strings.Contains(evt.In
 
 ---
 
+## v0.7.1-rwa-6 (base: upstream tag 0.7.1)
+
+### 8. Remover `rproducer.Intercept` de `sendToQueueOrWebhook` (`pkg/whatsmeow/service/whatsmeow.go`)
+
+**Motivação:** Bug crítico descoberto em prod 03/06/2026 — TODAS msgs incoming de TODAS empresas Evolution Go vinham sendo silenciosamente descartadas pelo backend CRM. Causa:
+
+1. `sendToQueueOrWebhook` rodava `rproducer.Intercept` com `RPRODUCER_PUBLISH_TO_QUEUE=rproducer-messages.upsert` + `RPRODUCER_ENVELOPE=rproducer-v1` ativos
+2. Resultado: WS Produce era chamado com `queueName="rproducer-messages.upsert"` e payload no envelope rproducer-v1 (chave `instance`, não `instanceName`)
+3. Backend CRM ([evolutionGoWebSocket.ts:1427](src/services/evolutionGoWebSocket.ts#L1427)) parseia `queue` esperando formato `{instanceId}.{event}` e lê `payload.instanceName`
+4. Backend não conseguia rotear → "Instancia nao encontrada: rproducer-messages" → drop silencioso (console.log silenciado em prod)
+
+**Bug secundário também resolvido:** Dedup duplicado — Intercept rodava em sendToQueueOrWebhook E em SendToGlobalQueues. Primeira chamada registrava msg_id no cache, segunda chamada filtrava como duplicata. Agent ainda recebia (porque per-instance RabbitMQ ainda publicava antes do filtro), mas o efeito era sutil em alguns paths.
+
+**Fix:** `Intercept` agora roda APENAS em `SendToGlobalQueues` (linhas 2454, 2512). `sendToQueueOrWebhook` mantém envelope nativo do whatsmeow e queueName original `{instanceId}.{event}`. Comportamento:
+
+- ✅ Per-instance RabbitMQ/NATS/Webhook/WS: envelope nativo (consumidores existentes funcionam)
+- ✅ Global AMQP (Agent): envelope rproducer-v1 + queue override (compat com Agent)
+- ✅ Dedup: aplicado uma vez só (em SendToGlobalQueues)
+
+**Validação pós-deploy:** Esperar msgs incoming aparecerem em `whatsapp_mensagens` para empresas Go (`origem='cliente'`). Hoje (pré-fix) só existem msgs com `origem='ia'` para essas empresas.
+
+**Próximo passo manual:** Após deploy bem-sucedido, reconectar instâncias Evolution Go órfãs (Dr. Jefferson Henrique e outras que pareceram pós-swap) pra re-disparar HistorySync.
+
+---
+
 ## Próximas modificações planejadas
 
 - Endpoint `POST /chat/resolveBatch` — resolver N LIDs em uma única request (otimização pro sweep).
