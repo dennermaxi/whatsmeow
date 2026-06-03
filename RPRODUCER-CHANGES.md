@@ -165,6 +165,20 @@ Com isso, o bridge node.js pode ser desligado sem quebrar nada.
 
 ---
 
+## v0.7.1-rwa-4 (base: upstream tag 0.7.1)
+
+### 6. Compatibilidade env var `SUPABASE_SERVICE_KEY` (bridge legacy)
+
+O bridge Node.js usa `SUPABASE_SERVICE_KEY` (sem `_ROLE`) como nome da env. Pra facilitar a migração da config existente (copy/paste do `.env` do bridge), aceito agora as 3 variações em ordem de precedência:
+
+1. `RPRODUCER_SUPABASE_SERVICE_KEY` (explicit namespaced)
+2. `SUPABASE_SERVICE_ROLE_KEY` (nome padrão oficial Supabase)
+3. `SUPABASE_SERVICE_KEY` (nome usado pelo bridge — compat)
+
+Sem essa mudança, quem copiasse o `.env` do bridge pro container Go tinha que renomear a var manualmente.
+
+---
+
 ## Próximas modificações planejadas
 
 - Endpoint `POST /chat/resolveBatch` — resolver N LIDs em uma única request (otimização pro sweep).

@@ -22,12 +22,19 @@ func SupabaseURL() string {
 }
 
 // SupabaseServiceKey retorna a service-role key (acesso total, bypassa RLS).
-// Env: RPRODUCER_SUPABASE_SERVICE_KEY OR SUPABASE_SERVICE_ROLE_KEY.
+// Env (em ordem de precedencia):
+//   1. RPRODUCER_SUPABASE_SERVICE_KEY (explicito, namespaced)
+//   2. SUPABASE_SERVICE_ROLE_KEY (nome padrao oficial do Supabase)
+//   3. SUPABASE_SERVICE_KEY (nome usado pelo bridge node.js — mantemos
+//      pra facilitar transicao da config existente)
 func SupabaseServiceKey() string {
 	if v := strings.TrimSpace(os.Getenv("RPRODUCER_SUPABASE_SERVICE_KEY")); v != "" {
 		return v
 	}
-	return strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY"))
+	if v := strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_ROLE_KEY")); v != "" {
+		return v
+	}
+	return strings.TrimSpace(os.Getenv("SUPABASE_SERVICE_KEY"))
 }
 
 // SupabaseConfigured retorna true se temos URL+key suficientes pra rodar lookups.
