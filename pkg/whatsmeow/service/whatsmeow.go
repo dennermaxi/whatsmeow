@@ -1120,6 +1120,43 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 			}
 		}
 
+		// [RPRODUCER] Self-lookup no LIDStore quando Sender/Chat ainda for @lid.
+		// Cobre o caso crítico do sync histórico de empresa nova: o whatsmeow
+		// recebe msgs em sequência rápida e às vezes a msg sai pro event handler
+		// ANTES do mapping LID→PN estar populado no LIDStore. Resultado: msg
+		// publicada com @lid → Agent salva órfão.
+		//
+		// Solução: aqui chamamos `Store.LIDs.GetPNForLID` que é lookup local
+		// na SQLite/Postgres do whatsmeow. Se o store já tem o mapping (mesmo
+		// que recém-chegado), resolvemos. Custo: ~1ms por msg @lid.
+		//
+		// Idempotente: se Sender/Chat já foi resolvido pelo swap nativo acima,
+		// strings.Contains(@lid) é false e este bloco vira no-op.
+		//
+		// Nota: types.MessageInfo tem SenderAlt mas NÃO tem ChatAlt no whatsmeow.
+		// Pro Chat fazemos resolve in-place sem backup (perde info @lid se queriam
+		// referência reversa — mas no nosso caso o Sender geralmente é o mesmo
+		// que o Chat em DMs, então o backup vai pra SenderAlt).
+		if strings.Contains(evt.Info.Sender.String(), "@lid") || strings.Contains(evt.Info.Chat.String(), "@lid") {
+			selfLookupCtx, selfLookupCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			if strings.Contains(evt.Info.Sender.String(), "@lid") {
+				if pn, err := mycli.WAClient.Store.LIDs.GetPNForLID(selfLookupCtx, evt.Info.Sender); err == nil && !pn.IsEmpty() {
+					if evt.Info.SenderAlt.IsEmpty() {
+						evt.Info.SenderAlt = evt.Info.Sender
+					}
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] [RPRODUCER] Self-lookup resolved Sender %s → %s", mycli.userID, evt.Info.Sender.String(), pn.String())
+					evt.Info.Sender = pn
+				}
+			}
+			if strings.Contains(evt.Info.Chat.String(), "@lid") {
+				if pn, err := mycli.WAClient.Store.LIDs.GetPNForLID(selfLookupCtx, evt.Info.Chat); err == nil && !pn.IsEmpty() {
+					mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] [RPRODUCER] Self-lookup resolved Chat %s → %s", mycli.userID, evt.Info.Chat.String(), pn.String())
+					evt.Info.Chat = pn
+				}
+			}
+			selfLookupCancel()
+		}
+
 		// Auto-marca mensagens como lidas se configurado
 		if mycli.Instance.ReadMessages && !evt.Info.IsFromMe {
 			go func() {

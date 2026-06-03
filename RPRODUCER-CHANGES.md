@@ -179,6 +179,31 @@ Sem essa mudança, quem copiasse o `.env` do bridge pro container Go tinha que r
 
 ---
 
+## v0.7.1-rwa-5 (base: upstream tag 0.7.1)
+
+### 7. Self-lookup no LIDStore durante event handling (`pkg/whatsmeow/service/whatsmeow.go`)
+
+**Motivação:** Após resolver o gap do bridge e fazer sweep dos 621 órfãs, identificamos que empresa nova fazendo sync histórico AINDA pode gerar órfãos @lid. Cenário:
+
+1. Whatsmeow recebe msgs do sync histórico em sequência rápida
+2. LIDStore (DB local do whatsmeow) é populado conforme processa
+3. **Algumas msgs chegam ao event handler ANTES do mapping LID→PN estar no store**
+4. Resultado: msg publicada com @lid → Agent salva órfão
+
+**Fix:** Adicionado bloco `[RPRODUCER]` em `case *events.Message` (linha ~1124) que faz self-lookup no `client.Store.LIDs.GetPNForLID()` quando Sender ou Chat ainda contém `@lid` após o swap nativo. Latency: ~1ms por lookup (DB local).
+
+```go
+if strings.Contains(evt.Info.Sender.String(), "@lid") || strings.Contains(evt.Info.Chat.String(), "@lid") {
+    // GetPNForLID lookup local no LIDStore + atualizar evt.Info.Sender/Chat in-place
+}
+```
+
+**Idempotente:** Se o swap nativo já resolveu, este bloco vira no-op (não há @lid). Se não resolveu mas o LIDStore TEM o mapping, resolvemos aqui. Se não tem mapping (LID realmente desconhecido), mantém @lid e segue.
+
+**Resultado esperado:** Quase 100% das msgs @lid são resolvidas antes do publish. Cobertura total ainda depende do whatsmeow ter visto a pessoa antes — pra LIDs "0% de interação prévia", continua falhando (edge case real, sem fix possível no whatsmeow).
+
+---
+
 ## Próximas modificações planejadas
 
 - Endpoint `POST /chat/resolveBatch` — resolver N LIDs em uma única request (otimização pro sweep).
