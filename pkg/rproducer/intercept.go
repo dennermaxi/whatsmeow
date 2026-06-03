@@ -1,7 +1,9 @@
 package rproducer
 
 import (
+	"context"
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -53,21 +55,103 @@ func Intercept(queueName string, jsonData []byte) InterceptResult {
 		}
 	}
 
-	// 3) Envelope override
+	// 3) LID Supabase fallback + marker injection
+	//    Pra cobrir o caso onde whatsmeow não conseguiu resolver @lid → @s.whatsapp.net
+	//    no swap nativo (Sender ou Chat continua @lid). Consulta Clientes.lid_jid.
+	if LIDLookupEnabled() && eventType == "Message" {
+		enrichLIDInPostMap(postMap)
+	}
+
+	// 4) Instance name normalization (slug → Empresa.Nome real)
+	if InstanceNameOverride() {
+		if rawName, ok := postMap["instanceName"].(string); ok && rawName != "" {
+			postMap["instanceName"] = ResolveInstanceName(rawName)
+		}
+	}
+
+	// 5) Envelope override
+	postMapChanged := LIDLookupEnabled() || InstanceNameOverride() // forçou mutação
 	if EnvelopeFormat() == "rproducer-v1" {
 		postMap = transformToRproducerV1(postMap)
-		newJSON, err := json.Marshal(postMap)
-		if err == nil {
+		postMapChanged = true
+	}
+	if postMapChanged {
+		if newJSON, err := json.Marshal(postMap); err == nil {
 			jsonData = newJSON
 		}
 	}
 
-	// 4) Queue override
+	// 6) Queue override
 	if override := PublishToQueueOverride(); override != "" {
 		queueName = override
 	}
 
 	return InterceptResult{ShouldSend: true, QueueName: queueName, JSONData: jsonData}
+}
+
+// enrichLIDInPostMap — inspeciona postMap["data"]["Info"] e tenta resolver
+// Sender/Chat/SenderAlt/ChatAlt quando contêm @lid via lookup Supabase.
+// Também injeta markers `_enrichedByBridge` e `_realNumber` (compat com Agent
+// que pode esperar isso).
+func enrichLIDInPostMap(postMap map[string]interface{}) {
+	data, ok := postMap["data"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	info, ok := data["Info"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	// Coleta JIDs @lid presentes
+	getStr := func(k string) string { s, _ := info[k].(string); return s }
+	candidates := []string{getStr("Sender"), getStr("Chat"), getStr("SenderAlt"), getStr("ChatAlt")}
+
+	var resolvedJid string
+	for _, c := range candidates {
+		if !strings.Contains(c, "@lid") {
+			continue
+		}
+		if real := ResolveLidViaSupabase(context.Background(), c); real != "" {
+			resolvedJid = real
+			break
+		}
+	}
+	if resolvedJid == "" {
+		return
+	}
+
+	// Aplica resolução: troca todos os @lid pelos @s.whatsapp.net real
+	// (mantém o @lid no SenderAlt/ChatAlt como referência reversa, igual o bridge fazia)
+	realLidJid := "" // o @lid original que resolvemos
+	for k, v := range info {
+		s, ok := v.(string)
+		if !ok {
+			continue
+		}
+		if strings.Contains(s, "@lid") {
+			if realLidJid == "" {
+				realLidJid = s
+			}
+			// Se é um campo "principal" (Sender/Chat), troca; SenderAlt/ChatAlt vira o @lid
+			switch k {
+			case "Sender", "Chat":
+				info[k] = resolvedJid
+			}
+		}
+	}
+	if realLidJid != "" {
+		if _, hasSenderAlt := info["SenderAlt"].(string); !hasSenderAlt || info["SenderAlt"] == "" {
+			info["SenderAlt"] = realLidJid
+		}
+		if _, hasChatAlt := info["ChatAlt"].(string); !hasChatAlt || info["ChatAlt"] == "" {
+			info["ChatAlt"] = realLidJid
+		}
+	}
+
+	// Markers compat com o bridge Node.js
+	info["_enrichedByBridge"] = true
+	info["_realNumber"] = strings.TrimSuffix(strings.Split(resolvedJid, "@")[0], "")
 }
 
 // extractMsgID — pega data.Info.ID do postMap (compat com whatsmeow event shape).

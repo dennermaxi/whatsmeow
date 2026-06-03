@@ -79,5 +79,7 @@ func AnyEnabled() bool {
 	return PublishToQueueOverride() != "" ||
 		EnvelopeFormat() != "" ||
 		FilterMessageOnly() ||
-		DedupEnabled()
+		DedupEnabled() ||
+		InstanceNameOverride() ||
+		LIDLookupEnabled()
 }

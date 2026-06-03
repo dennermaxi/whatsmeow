@@ -111,6 +111,60 @@ Com essa config, o Agent recebe eventos EXATAMENTE como o bridge entregava, sem 
 
 ---
 
+## v0.7.1-rwa-3 (base: upstream tag 0.7.1)
+
+### 5. Cobertura 100% das transformações do bridge — instance normalization + LID Supabase fallback + markers
+
+**Motivação:** Auditoria fina revelou 3 gaps que faltavam pro fork conseguir substituir 100% o bridge Node.js. Sem isso, o swap ia quebrar o Agent.
+
+**Arquivo novo:** `pkg/rproducer/supabase.go` (~200 linhas)
+
+**Features adicionadas:**
+
+#### 5.1 Instance name normalization (`RPRODUCER_INSTANCE_NAME_OVERRIDE=true`)
+- Goroutine de startup carrega `SELECT Nome FROM Empresa` via Supabase REST
+- Constrói `map[slug]→Nome` (slug = lowercase + sem acentos + sem não-alfanumérico, copiando exatamente o `normalizeSlug` do bridge)
+- Refresh a cada 5min
+- Em runtime: `ResolveInstanceName(raw)` retorna o `Empresa.Nome` correto quando recebe um slug; senão fallback gracioso (retorna input)
+- Necessário porque o RProducerAgent consulta `Empresa.eq.Nome.<instance>` — se mandarmos slug não normalizado, lookup falha
+
+#### 5.2 LID Supabase fallback (`RPRODUCER_LID_LOOKUP=true`)
+- Quando o whatsmeow não conseguiu resolver `@lid` no swap nativo (sender/chat ainda @lid), faz `SELECT number FROM Clientes WHERE lid_jid=X`
+- Cache in-memory via `sync.Map` (sem TTL — LIDs não mudam, só crescem mappings)
+- Aplica resolução: troca todos `@lid` em `Sender`/`Chat` por `@s.whatsapp.net`, mantém o `@lid` original em `SenderAlt`/`ChatAlt`
+- Cobre o caso onde whatsmeow ainda não viu o mapping mas o bridge node.js viu primeiro e populou `Clientes.lid_jid`
+
+#### 5.3 Markers de compat (`RPRODUCER_LID_LOOKUP=true`)
+- Quando faz lookup LID Supabase, injeta no payload:
+  - `Info._enrichedByBridge = true`
+  - `Info._realNumber = "<digits>"`
+- Compat com o que o bridge node.js fazia. Se o Agent depender desses markers, continua funcionando.
+
+**Env vars adicionadas (v0.7.1-rwa-3):**
+
+| Env var | Default | Efeito |
+|---|---|---|
+| `RPRODUCER_INSTANCE_NAME_OVERRIDE` | `false` | Ativa normalização slug→Empresa.Nome real |
+| `RPRODUCER_LID_LOOKUP` | `false` | Ativa fallback LID via Clientes.lid_jid + markers |
+| `RPRODUCER_SUPABASE_URL` ou `SUPABASE_URL` | — | URL do Supabase (necessário pra 5.1 e 5.2) |
+| `RPRODUCER_SUPABASE_SERVICE_KEY` ou `SUPABASE_SERVICE_ROLE_KEY` | — | Service key (bypass RLS) |
+
+**Configuração FINAL recomendada (paridade TOTAL com bridge):**
+```
+RPRODUCER_FILTER_MESSAGE_ONLY=true
+RPRODUCER_DEDUP=true
+RPRODUCER_ENVELOPE=rproducer-v1
+RPRODUCER_PUBLISH_TO_QUEUE=rproducer-messages.upsert
+RPRODUCER_INSTANCE_NAME_OVERRIDE=true
+RPRODUCER_LID_LOOKUP=true
+SUPABASE_URL=https://ekhwfizcisydztkjnzpx.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<service-role-key>
+```
+
+Com isso, o bridge node.js pode ser desligado sem quebrar nada.
+
+---
+
 ## Próximas modificações planejadas
 
 - Endpoint `POST /chat/resolveBatch` — resolver N LIDs em uma única request (otimização pro sweep).
