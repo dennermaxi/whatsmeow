@@ -37,6 +37,8 @@ import (
 	"github.com/EvolutionAPI/evolution-go/pkg/config"
 	producer_interfaces "github.com/EvolutionAPI/evolution-go/pkg/events/interfaces"
 	instance_model "github.com/EvolutionAPI/evolution-go/pkg/instance/model"
+	// [RPRODUCER] hook pra filtrar/transformar publishes
+	"github.com/EvolutionAPI/evolution-go/pkg/rproducer"
 	instance_repository "github.com/EvolutionAPI/evolution-go/pkg/instance/repository"
 	"github.com/EvolutionAPI/evolution-go/pkg/internal/event_types"
 	label_model "github.com/EvolutionAPI/evolution-go/pkg/label/model"
@@ -2143,6 +2145,16 @@ func contains(subscriptions []string, event string) bool {
 }
 
 func (w *whatsmeowService) sendToQueueOrWebhook(instance *instance_model.Instance, queueName string, jsonData []byte) {
+	// [RPRODUCER] hook: filtro + dedup + envelope override + queue override.
+	// Tudo zero-overhead se nenhuma env var RPRODUCER_* estiver setada.
+	// Ver pkg/rproducer/intercept.go pra detalhes.
+	res := rproducer.Intercept(queueName, jsonData)
+	if !res.ShouldSend {
+		return
+	}
+	queueName = res.QueueName
+	jsonData = res.JSONData
+
 	if instance.RabbitmqEnable == "enabled" || instance.RabbitmqEnable == "true" {
 		err := w.rabbitmqProducer.Produce(queueName, jsonData, instance.RabbitmqEnable, instance.Id)
 		if err != nil {
@@ -2397,12 +2409,20 @@ func (w *whatsmeowService) SendToGlobalQueues(eventType string, payload []byte, 
 
 		// Envia para RabbitMQ se necessário
 		if shouldSendToAmqp {
-			w.loggerWrapper.GetLogger(userId).LogInfo("[%s] Sending to AMQP queue: %s", userId, amqpQueueName)
-			err := w.rabbitmqProducer.Produce(amqpQueueName, payload, "global", userId)
-			if err != nil {
-				w.loggerWrapper.GetLogger(userId).LogError("[%s] Failed to send message to RabbitMQ global queue %s: %v", userId, amqpQueueName, err)
+			// [RPRODUCER] hook em publishes globais (AMQP)
+			amqpRes := rproducer.Intercept(amqpQueueName, payload)
+			if !amqpRes.ShouldSend {
+				w.loggerWrapper.GetLogger(userId).LogInfo("[%s] AMQP global publish filtered out by RPRODUCER intercept", userId)
 			} else {
-				w.loggerWrapper.GetLogger(userId).LogInfo("[%s] Successfully sent message to RabbitMQ global queue %s", userId, amqpQueueName)
+				amqpQueueName = amqpRes.QueueName
+				amqpPayload := amqpRes.JSONData
+				w.loggerWrapper.GetLogger(userId).LogInfo("[%s] Sending to AMQP queue: %s", userId, amqpQueueName)
+				err := w.rabbitmqProducer.Produce(amqpQueueName, amqpPayload, "global", userId)
+				if err != nil {
+					w.loggerWrapper.GetLogger(userId).LogError("[%s] Failed to send message to RabbitMQ global queue %s: %v", userId, amqpQueueName, err)
+				} else {
+					w.loggerWrapper.GetLogger(userId).LogInfo("[%s] Successfully sent message to RabbitMQ global queue %s", userId, amqpQueueName)
+				}
 			}
 		} else {
 			w.loggerWrapper.GetLogger(userId).LogInfo("[%s] Event %s not configured for AMQP", userId, eventType)
@@ -2447,6 +2467,14 @@ func (w *whatsmeowService) SendToGlobalQueues(eventType string, payload []byte, 
 		// Verifica se o evento está na lista de eventos globais NATS
 		if globalEventType != "" && utils.Find(w.config.NatsGlobalEvents, globalEventType) {
 			queueName := strings.ToLower(eventType)
+			// [RPRODUCER] hook em publishes globais (NATS)
+			natsRes := rproducer.Intercept(queueName, payload)
+			if !natsRes.ShouldSend {
+				w.loggerWrapper.GetLogger(userId).LogInfo("[%s] NATS global publish filtered out by RPRODUCER intercept", userId)
+				return
+			}
+			queueName = natsRes.QueueName
+			payload = natsRes.JSONData
 			w.loggerWrapper.GetLogger(userId).LogInfo("[%s] Sending to NATS subject: %s", userId, queueName)
 
 			err := w.natsProducer.Produce(queueName, payload, "global", userId)

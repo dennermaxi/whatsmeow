@@ -67,6 +67,53 @@ Reescritos pra refletir que é um fork RProducer, sem usar marca "Evolution" no 
 
 ---
 
+## v0.7.1-rwa-2 (base: upstream tag 0.7.1)
+
+### 4. Pacote `pkg/rproducer/` — interceptor de publishes via env vars
+
+**Motivação:** O RProducer tinha um bridge Node.js (`websocket-evolution-go`) que ficava entre o Evolution Go e o consumer (RProducerAgent). O bridge fazia 4 coisas que o upstream não fazia:
+1. Filtrar publishes pra só eventos `Message` (descartando `SendMessage`, `Receipt`, etc)
+2. Deduplicar mensagens (Evolution emite a mesma msg 2x — uma com `@lid` outra com `@s.whatsapp.net`)
+3. Publicar em fila única `rproducer-messages.upsert` (em vez de uma fila por evento)
+4. Reformatar envelope JSON pro formato `{event, instance, data, timestamp, source}` (em vez do default `{event, instanceId, instanceToken, instanceName, data}`)
+
+Sem essas 4 features, o Agent (consumer) não conseguiria processar os eventos publicados diretamente pelo Go.
+
+**Solução:** Pacote `pkg/rproducer/` isolado com a lógica, ativada por env vars. Único ponto de injeção no upstream: `sendToQueueOrWebhook` e `SendToGlobalQueues` em `pkg/whatsmeow/service/whatsmeow.go` (3 chamadas a `rproducer.Intercept`).
+
+**Arquivos novos:**
+- `pkg/rproducer/config.go` — leitura de env vars
+- `pkg/rproducer/dedup.go` — LRU cache thread-safe via `sync.Map` + sweeper 30s, TTL 60s, cap 50k
+- `pkg/rproducer/intercept.go` — função `Intercept(queueName, jsonData) → {ShouldSend, QueueName, JSONData}`
+
+**Env vars adicionadas:**
+
+| Env var | Default | Efeito |
+|---|---|---|
+| `RPRODUCER_FILTER_MESSAGE_ONLY` | `false` | Descarta publishes de eventos != `Message` (reduz tráfego RabbitMQ ~70%) |
+| `RPRODUCER_DEDUP` | `false` | Dedup por `data.Info.ID` (TTL 60s, LRU 50k entries) |
+| `RPRODUCER_ENVELOPE` | `` | Se `=rproducer-v1`, reformata postMap pro envelope que o RProducerAgent espera |
+| `RPRODUCER_PUBLISH_TO_QUEUE` | `` | Se setado, força TODOS os publishes pra essa fila (ex: `rproducer-messages.upsert`). Senão usa o queueName default (`instanceId.eventType`) |
+
+**Performance:** Se NENHUMA env var RPRODUCER_* estiver setada, `Intercept()` retorna passthrough em ~10ns (1 leitura `os.Getenv`). Overhead zero se desligado.
+
+**Default behavior:** Sem env vars, o fork se comporta IDÊNTICO ao upstream — pode ser usado como drop-in replacement.
+
+**Configuração pra paridade com bridge (recomendada pra RProducer prod):**
+```
+RPRODUCER_FILTER_MESSAGE_ONLY=true
+RPRODUCER_DEDUP=true
+RPRODUCER_ENVELOPE=rproducer-v1
+RPRODUCER_PUBLISH_TO_QUEUE=rproducer-messages.upsert
+```
+
+Com essa config, o Agent recebe eventos EXATAMENTE como o bridge entregava, sem precisar mexer no consumer.
+
+---
+
 ## Próximas modificações planejadas
 
-(Nada por enquanto — patches só conforme necessidade real.)
+- Endpoint `POST /chat/resolveBatch` — resolver N LIDs em uma única request (otimização pro sweep).
+- Endpoint `GET /admin/lid-store/stats` — quantidade de mappings no LIDStore (debug).
+- Endpoint `GET /admin/stats` — stats agregadas (msg/sec, instâncias up, queue depth).
+- Graceful shutdown — drain producers antes de exit.
