@@ -125,6 +125,28 @@ type BlockStruct struct {
 	Action string `json:"action"` // 'block' | 'unblock'
 }
 
+// [RPRODUCER v0.7.1-rwa-9] Verifica se o client tem Store.AppState carregado.
+// whatsmeow appstate.go:503 (cli.Store.AppState.GetAppStateVersion) panica com
+// nil pointer se Store ou AppState forem nil — pode acontecer logo apos
+// reconexao quando session ainda nao tem AppState totalmente inicializado.
+func clientHasAppState(client *whatsmeow.Client) bool {
+	return client != nil && client.Store != nil && client.Store.AppState != nil
+}
+
+// [RPRODUCER v0.7.1-rwa-9] ensureClientForAppState — combina ensureClientConnected
+// + check de AppState. Retorna erro tratado em vez de panic. Use em funcoes que
+// chamam cli.SendAppState().
+func (c *chatService) ensureClientForAppState(instanceId string) (*whatsmeow.Client, error) {
+	client, err := c.ensureClientConnected(instanceId)
+	if err != nil {
+		return nil, err
+	}
+	if !clientHasAppState(client) {
+		return nil, errors.New("client app state not initialized — try again in a few seconds")
+	}
+	return client, nil
+}
+
 func (c *chatService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
 	client := c.clientPointer[instanceId]
 	c.loggerWrapper.GetLogger(instanceId).LogInfo("[%s] Checking client connection status - Client exists: %v", instanceId, client != nil)
@@ -165,7 +187,7 @@ func (c *chatService) ensureClientConnected(instanceId string) (*whatsmeow.Clien
 }
 
 func (c *chatService) ChatPin(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -188,7 +210,7 @@ func (c *chatService) ChatPin(data *BodyStruct, instance *instance_model.Instanc
 }
 
 func (c *chatService) ChatUnpin(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +233,7 @@ func (c *chatService) ChatUnpin(data *BodyStruct, instance *instance_model.Insta
 }
 
 func (c *chatService) ChatArchive(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -234,7 +256,7 @@ func (c *chatService) ChatArchive(data *BodyStruct, instance *instance_model.Ins
 }
 
 func (c *chatService) ChatUnarchive(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -257,7 +279,7 @@ func (c *chatService) ChatUnarchive(data *BodyStruct, instance *instance_model.I
 }
 
 func (c *chatService) ChatMute(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -280,7 +302,7 @@ func (c *chatService) ChatMute(data *BodyStruct, instance *instance_model.Instan
 }
 
 func (c *chatService) ChatUnmute(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -304,7 +326,7 @@ func (c *chatService) ChatUnmute(data *BodyStruct, instance *instance_model.Inst
 
 // [RPRODUCER] ChatMarkRead — marca conversa como LIDA (sincroniza com WA Web/mobile via app-state patch).
 func (c *chatService) ChatMarkRead(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -329,7 +351,7 @@ func (c *chatService) ChatMarkRead(data *BodyStruct, instance *instance_model.In
 // [RPRODUCER] ChatMarkUnread — marca conversa como NAO LIDA (sincroniza com WA Web/mobile via app-state patch).
 // Caso de uso: leadgen — apos sistema responder ao lead, marcar conversa como nao lida pra atendente humano notar.
 func (c *chatService) ChatMarkUnread(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -353,7 +375,7 @@ func (c *chatService) ChatMarkUnread(data *BodyStruct, instance *instance_model.
 
 // [RPRODUCER] ChatStar — favoritar/desfavoritar msg (sincroniza estrela com WA)
 func (c *chatService) ChatStar(data *StarStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -382,7 +404,7 @@ func (c *chatService) ChatStar(data *StarStruct, instance *instance_model.Instan
 
 // [RPRODUCER] ChatLabelEdit — cria/edita/deleta label (etiqueta WA Business)
 func (c *chatService) ChatLabelEdit(data *LabelEditStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -400,7 +422,7 @@ func (c *chatService) ChatLabelEdit(data *LabelEditStruct, instance *instance_mo
 
 // [RPRODUCER] ChatLabelChat — aplica/remove label numa conversa
 func (c *chatService) ChatLabelChat(data *LabelChatStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
@@ -518,7 +540,7 @@ func (c *chatService) ChatMarkMessageRead(data *MarkMessageReadStruct, instance 
 
 // [RPRODUCER] ChatClearChat — limpa historico (BuildDeleteChat na whatsmeow)
 func (c *chatService) ChatClearChat(data *BodyStruct, instance *instance_model.Instance) (string, error) {
-	client, err := c.ensureClientConnected(instance.Id)
+	client, err := c.ensureClientForAppState(instance.Id)
 	if err != nil {
 		return "", err
 	}
