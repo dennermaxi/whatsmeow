@@ -170,6 +170,9 @@ func (r *Routes) AssignRoutes(eng *gin.Engine) {
 			routes.POST("/history-sync", r.chatHandler.HistorySyncRequest)
 			// [RPRODUCER] LID → PN resolver — expõe LIDStore do whatsmeow
 			routes.POST("/resolveLid", r.chatHandler.ResolveLid)
+			// [RPRODUCER] Mark conversation as read/unread via app-state patch (sincroniza WA real)
+			routes.POST("/markRead", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatMarkRead)
+			routes.POST("/markUnread", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatMarkUnread)
 		}
 	}
 	routes = eng.Group("/group")

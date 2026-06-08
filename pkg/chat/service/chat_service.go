@@ -26,6 +26,11 @@ type ChatService interface {
 	// [RPRODUCER] ResolveLid — expõe o LIDStore interno do whatsmeow via HTTP.
 	// Recebe um JID @lid e retorna o JID real @s.whatsapp.net (ou vazio se desconhecido).
 	ResolveLid(data *ResolveLidStruct, instance *instance_model.Instance) (*ResolveLidResponse, error)
+	// [RPRODUCER] MarkChatAsRead/MarkChatAsUnread — marca conversa como lida/nao lida.
+	// Usa appstate.BuildMarkChatAsRead (whatsmeow) que sincroniza com WA Web/Mobile via patch multi-device.
+	// Diferente do Evolution v2 que so atualiza cache interno (nao sincroniza com WA real).
+	ChatMarkRead(data *BodyStruct, instance *instance_model.Instance) (string, error)
+	ChatMarkUnread(data *BodyStruct, instance *instance_model.Instance) (string, error)
 }
 
 type chatService struct {
@@ -226,6 +231,55 @@ func (c *chatService) ChatUnmute(data *BodyStruct, instance *instance_model.Inst
 	err = client.SendAppState(context.Background(), appstate.BuildMute(recipient, false, 0*time.Hour))
 	if err != nil {
 		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error unmute chat: %v", instance.Id, err)
+		return "", err
+	}
+
+	return ts.String(), nil
+}
+
+// [RPRODUCER] ChatMarkRead — marca conversa como LIDA (sincroniza com WA Web/mobile via app-state patch).
+func (c *chatService) ChatMarkRead(data *BodyStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+
+	var ts time.Time
+
+	recipient, ok := utils.ParseJID(data.Chat)
+	if !ok {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating message fields", instance.Id)
+		return "", errors.New("invalid phone number")
+	}
+
+	err = client.SendAppState(context.Background(), appstate.BuildMarkChatAsRead(recipient, true, time.Time{}, nil))
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error mark chat as read: %v", instance.Id, err)
+		return "", err
+	}
+
+	return ts.String(), nil
+}
+
+// [RPRODUCER] ChatMarkUnread — marca conversa como NAO LIDA (sincroniza com WA Web/mobile via app-state patch).
+// Caso de uso: leadgen — apos sistema responder ao lead, marcar conversa como nao lida pra atendente humano notar.
+func (c *chatService) ChatMarkUnread(data *BodyStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+
+	var ts time.Time
+
+	recipient, ok := utils.ParseJID(data.Chat)
+	if !ok {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] Error validating message fields", instance.Id)
+		return "", errors.New("invalid phone number")
+	}
+
+	err = client.SendAppState(context.Background(), appstate.BuildMarkChatAsRead(recipient, false, time.Time{}, nil))
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error mark chat as unread: %v", instance.Id, err)
 		return "", err
 	}
 

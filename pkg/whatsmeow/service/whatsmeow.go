@@ -1733,12 +1733,15 @@ func (mycli *MyClient) myEventHandler(rawEvt interface{}) {
 		doWebhook = true
 		postMap["event"] = "Archive"
 
-		dataMap := postMap["data"].(map[string]interface{})
-		dataMap["JID"] = evt.JID
-		dataMap["Timestamp"] = evt.Timestamp
-		dataMap["Action"] = evt.Action
-		dataMap["FromFullSync"] = evt.FromFullSync
-		postMap["data"] = dataMap
+		// [RPRODUCER fix] postMap["data"] = rawEvt (linha 852) ja tinha setado o
+		// *events.Archive struct. O type assertion pra map[string]interface{}
+		// causava panic em prod. Corrigido: construir o map diretamente.
+		postMap["data"] = map[string]interface{}{
+			"JID":          evt.JID,
+			"Timestamp":    evt.Timestamp,
+			"Action":       evt.Action,
+			"FromFullSync": evt.FromFullSync,
+		}
 
 		mycli.loggerWrapper.GetLogger(mycli.userID).LogInfo("[%s] Chat archived", mycli.userID)
 	case *events.HistorySync:

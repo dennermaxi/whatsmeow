@@ -18,6 +18,9 @@ type ChatHandler interface {
 	HistorySyncRequest(ctx *gin.Context)
 	// [RPRODUCER] LID → PN resolver (proxy pro LIDStore interno do whatsmeow)
 	ResolveLid(ctx *gin.Context)
+	// [RPRODUCER] Marca conversa como lida/nao lida via app-state patch (sincroniza com WA Web/Mobile)
+	ChatMarkRead(ctx *gin.Context)
+	ChatMarkUnread(ctx *gin.Context)
 }
 
 type chatHandler struct {
@@ -292,6 +295,88 @@ func (c *chatHandler) ChatUnmute(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": responseData})
+}
+
+// [RPRODUCER] Mark chat as read
+// @Summary Mark chat as read
+// @Description Marks chat as read via app-state patch (sincroniza com WA Web/Mobile)
+// @Tags Chat
+// @Accept json
+// @Produce json
+// @Param message body chat_service.BodyStruct true "Chat"
+// @Success 200 {object} gin.H "success"
+// @Failure 400 {object} gin.H "Error on validation"
+// @Failure 500 {object} gin.H "Internal server error"
+// @Router /chat/markRead [post]
+func (c *chatHandler) ChatMarkRead(ctx *gin.Context) {
+	getInstance := ctx.MustGet("instance")
+
+	instance, ok := getInstance.(*instance_model.Instance)
+	if !ok {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
+		return
+	}
+
+	var data *chat_service.BodyStruct
+	err := ctx.ShouldBindBodyWithJSON(&data)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if data.Chat == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "chat is required"})
+		return
+	}
+
+	ts, err := c.chatService.ChatMarkRead(data, instance)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": gin.H{"timestamp": ts}})
+}
+
+// [RPRODUCER] Mark chat as unread
+// @Summary Mark chat as unread
+// @Description Marks chat as unread via app-state patch (sincroniza com WA Web/Mobile). Caso de uso: leadgen.
+// @Tags Chat
+// @Accept json
+// @Produce json
+// @Param message body chat_service.BodyStruct true "Chat"
+// @Success 200 {object} gin.H "success"
+// @Failure 400 {object} gin.H "Error on validation"
+// @Failure 500 {object} gin.H "Internal server error"
+// @Router /chat/markUnread [post]
+func (c *chatHandler) ChatMarkUnread(ctx *gin.Context) {
+	getInstance := ctx.MustGet("instance")
+
+	instance, ok := getInstance.(*instance_model.Instance)
+	if !ok {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
+		return
+	}
+
+	var data *chat_service.BodyStruct
+	err := ctx.ShouldBindBodyWithJSON(&data)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if data.Chat == "" {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "chat is required"})
+		return
+	}
+
+	ts, err := c.chatService.ChatMarkUnread(data, instance)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": gin.H{"timestamp": ts}})
 }
 
 // HistorySyncRequest a chat
