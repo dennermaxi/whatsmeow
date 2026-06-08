@@ -173,6 +173,15 @@ func (r *Routes) AssignRoutes(eng *gin.Engine) {
 			// [RPRODUCER] Mark conversation as read/unread via app-state patch (sincroniza WA real)
 			routes.POST("/markRead", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatMarkRead)
 			routes.POST("/markUnread", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatMarkUnread)
+			// [RPRODUCER] Favoritar/labels/presence/read receipts/clear/block — todos sincronizam com WA real
+			routes.POST("/star", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatStar)
+			routes.POST("/labelEdit", r.chatHandler.ChatLabelEdit) // sem jid (acao em labels, nao chat)
+			routes.POST("/labelChat", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatLabelChat)
+			routes.POST("/presence", r.chatHandler.SendPresence) // sem jid (account-wide)
+			routes.POST("/chatPresence", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.SendChatPresence)
+			routes.POST("/markMessageRead", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatMarkMessageRead)
+			routes.POST("/clearChat", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatClearChat)
+			routes.POST("/block", r.jidValidationMiddleware.ValidateNumberField(), r.chatHandler.ChatBlock)
 		}
 	}
 	routes = eng.Group("/group")

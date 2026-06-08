@@ -21,6 +21,15 @@ type ChatHandler interface {
 	// [RPRODUCER] Marca conversa como lida/nao lida via app-state patch (sincroniza com WA Web/Mobile)
 	ChatMarkRead(ctx *gin.Context)
 	ChatMarkUnread(ctx *gin.Context)
+	// [RPRODUCER] Favoritar/labels/presence/receipts/clearChat/block
+	ChatStar(ctx *gin.Context)
+	ChatLabelEdit(ctx *gin.Context)
+	ChatLabelChat(ctx *gin.Context)
+	SendPresence(ctx *gin.Context)
+	SendChatPresence(ctx *gin.Context)
+	ChatMarkMessageRead(ctx *gin.Context)
+	ChatClearChat(ctx *gin.Context)
+	ChatBlock(ctx *gin.Context)
 }
 
 type chatHandler struct {
@@ -456,6 +465,83 @@ func (c *chatHandler) ResolveLid(ctx *gin.Context) {
 	}
 
 	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": resp})
+}
+
+// [RPRODUCER] helper pra evitar boilerplate nos handlers novos
+func bindAndDo[T any](ctx *gin.Context, fn func(*T, *instance_model.Instance) (string, error)) {
+	getInstance := ctx.MustGet("instance")
+	instance, ok := getInstance.(*instance_model.Instance)
+	if !ok {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "instance not found"})
+		return
+	}
+	var data *T
+	if err := ctx.ShouldBindBodyWithJSON(&data); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	ts, err := fn(data, instance)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"message": "success", "data": gin.H{"timestamp": ts}})
+}
+
+// @Summary Star or unstar a message
+// @Tags Chat
+// @Router /chat/star [post]
+func (c *chatHandler) ChatStar(ctx *gin.Context) {
+	bindAndDo(ctx, c.chatService.ChatStar)
+}
+
+// @Summary Create/edit/delete WhatsApp Business label
+// @Tags Chat
+// @Router /chat/labelEdit [post]
+func (c *chatHandler) ChatLabelEdit(ctx *gin.Context) {
+	bindAndDo(ctx, c.chatService.ChatLabelEdit)
+}
+
+// @Summary Apply/remove label to a chat
+// @Tags Chat
+// @Router /chat/labelChat [post]
+func (c *chatHandler) ChatLabelChat(ctx *gin.Context) {
+	bindAndDo(ctx, c.chatService.ChatLabelChat)
+}
+
+// @Summary Send account presence (available/unavailable)
+// @Tags Chat
+// @Router /chat/presence [post]
+func (c *chatHandler) SendPresence(ctx *gin.Context) {
+	bindAndDo(ctx, c.chatService.SendPresence)
+}
+
+// @Summary Send chat presence (typing/recording per chat)
+// @Tags Chat
+// @Router /chat/chatPresence [post]
+func (c *chatHandler) SendChatPresence(ctx *gin.Context) {
+	bindAndDo(ctx, c.chatService.SendChatPresence)
+}
+
+// @Summary Mark messages as read (blue double check)
+// @Tags Chat
+// @Router /chat/markMessageRead [post]
+func (c *chatHandler) ChatMarkMessageRead(ctx *gin.Context) {
+	bindAndDo(ctx, c.chatService.ChatMarkMessageRead)
+}
+
+// @Summary Clear chat history
+// @Tags Chat
+// @Router /chat/clearChat [post]
+func (c *chatHandler) ChatClearChat(ctx *gin.Context) {
+	bindAndDo(ctx, c.chatService.ChatClearChat)
+}
+
+// @Summary Block or unblock a contact
+// @Tags Chat
+// @Router /chat/block [post]
+func (c *chatHandler) ChatBlock(ctx *gin.Context) {
+	bindAndDo(ctx, c.chatService.ChatBlock)
 }
 
 func NewChatHandler(

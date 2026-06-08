@@ -13,6 +13,7 @@ import (
 	"go.mau.fi/whatsmeow"
 	"go.mau.fi/whatsmeow/appstate"
 	"go.mau.fi/whatsmeow/types"
+	"go.mau.fi/whatsmeow/types/events"
 )
 
 type ChatService interface {
@@ -31,6 +32,21 @@ type ChatService interface {
 	// Diferente do Evolution v2 que so atualiza cache interno (nao sincroniza com WA real).
 	ChatMarkRead(data *BodyStruct, instance *instance_model.Instance) (string, error)
 	ChatMarkUnread(data *BodyStruct, instance *instance_model.Instance) (string, error)
+	// [RPRODUCER] Favoritar mensagem (sincroniza com WA — estrela aparece no celular)
+	ChatStar(data *StarStruct, instance *instance_model.Instance) (string, error)
+	// [RPRODUCER] Labels (etiquetas) — WhatsApp Business. Bidirecional com app.
+	ChatLabelEdit(data *LabelEditStruct, instance *instance_model.Instance) (string, error)
+	ChatLabelChat(data *LabelChatStruct, instance *instance_model.Instance) (string, error)
+	// [RPRODUCER] Presence — online/offline account-wide
+	SendPresence(data *PresenceStruct, instance *instance_model.Instance) (string, error)
+	// [RPRODUCER] ChatPresence — typing/recording por chat
+	SendChatPresence(data *ChatPresenceStruct, instance *instance_model.Instance) (string, error)
+	// [RPRODUCER] Mark message read — duplo-check azul (read receipts)
+	ChatMarkMessageRead(data *MarkMessageReadStruct, instance *instance_model.Instance) (string, error)
+	// [RPRODUCER] Clear chat — limpa historico local (vira BuildDeleteChat na whatsmeow)
+	ChatClearChat(data *BodyStruct, instance *instance_model.Instance) (string, error)
+	// [RPRODUCER] Block/Unblock contato
+	ChatBlock(data *BlockStruct, instance *instance_model.Instance) (string, error)
 }
 
 type chatService struct {
@@ -58,6 +74,55 @@ type ResolveLidResponse struct {
 	Lid   string `json:"lid"`   // o LID que foi consultado (normalizado)
 	Pn    string `json:"pn"`    // JID real (@s.whatsapp.net) ou string vazia se não achou
 	Found bool   `json:"found"` // true se o mapping existe no LIDStore do whatsmeow
+}
+
+// [RPRODUCER] POST /chat/star — favoritar/desfavoritar mensagem (sincroniza com WA)
+type StarStruct struct {
+	Chat      string `json:"chat"`      // jid da conversa
+	Sender    string `json:"sender"`    // jid do remetente (mesmo da conversa pra 1-on-1; participante pra grupo)
+	MessageId string `json:"messageId"` // id da mensagem
+	FromMe    bool   `json:"fromMe"`    // se a msg e da gente ou nao
+	Starred   bool   `json:"starred"`   // true=favoritar, false=desfavoritar
+}
+
+// [RPRODUCER] POST /chat/labelEdit — cria/edita/deleta label (etiqueta WA Business)
+type LabelEditStruct struct {
+	LabelId string `json:"labelId"` // id unico da label (string, gerar via uuid ou seq)
+	Name    string `json:"name"`    // nome visivel
+	Color   int32  `json:"color"`   // 0-19 (paleta WA Business)
+	Deleted bool   `json:"deleted"` // true=deletar
+}
+
+// [RPRODUCER] POST /chat/labelChat — aplica/remove label numa conversa
+type LabelChatStruct struct {
+	Chat    string `json:"chat"`    // jid da conversa
+	LabelId string `json:"labelId"` // id da label
+	Labeled bool   `json:"labeled"` // true=aplicar, false=remover
+}
+
+// [RPRODUCER] POST /chat/presence — online/offline account-wide
+type PresenceStruct struct {
+	Presence string `json:"presence"` // 'available' | 'unavailable'
+}
+
+// [RPRODUCER] POST /chat/chatPresence — typing/recording por chat
+type ChatPresenceStruct struct {
+	Chat  string `json:"chat"`  // jid
+	State string `json:"state"` // 'composing' | 'recording' | 'paused'
+	Media string `json:"media"` // 'text' | 'audio' (opcional)
+}
+
+// [RPRODUCER] POST /chat/markMessageRead — read receipt (duplo-check azul)
+type MarkMessageReadStruct struct {
+	Chat       string   `json:"chat"`               // jid da conversa
+	Sender     string   `json:"sender,omitempty"`   // jid do remetente (default: chat pra 1-on-1)
+	MessageIds []string `json:"messageIds"`         // array de IDs
+}
+
+// [RPRODUCER] POST /chat/block — bloquear/desbloquear contato
+type BlockStruct struct {
+	Chat   string `json:"chat"`   // jid do contato
+	Action string `json:"action"` // 'block' | 'unblock'
 }
 
 func (c *chatService) ensureClientConnected(instanceId string) (*whatsmeow.Client, error) {
@@ -283,6 +348,218 @@ func (c *chatService) ChatMarkUnread(data *BodyStruct, instance *instance_model.
 		return "", err
 	}
 
+	return ts.String(), nil
+}
+
+// [RPRODUCER] ChatStar — favoritar/desfavoritar msg (sincroniza estrela com WA)
+func (c *chatService) ChatStar(data *StarStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+	var ts time.Time
+	chat, ok := utils.ParseJID(data.Chat)
+	if !ok {
+		return "", errors.New("invalid chat jid")
+	}
+	sender := chat
+	if data.Sender != "" {
+		s, ok2 := utils.ParseJID(data.Sender)
+		if ok2 {
+			sender = s
+		}
+	}
+	if data.MessageId == "" {
+		return "", errors.New("messageId is required")
+	}
+	err = client.SendAppState(context.Background(), appstate.BuildStar(chat, sender, data.MessageId, data.FromMe, data.Starred))
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error star msg: %v", instance.Id, err)
+		return "", err
+	}
+	return ts.String(), nil
+}
+
+// [RPRODUCER] ChatLabelEdit — cria/edita/deleta label (etiqueta WA Business)
+func (c *chatService) ChatLabelEdit(data *LabelEditStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+	var ts time.Time
+	if data.LabelId == "" {
+		return "", errors.New("labelId is required")
+	}
+	err = client.SendAppState(context.Background(), appstate.BuildLabelEdit(data.LabelId, data.Name, data.Color, data.Deleted))
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error label edit: %v", instance.Id, err)
+		return "", err
+	}
+	return ts.String(), nil
+}
+
+// [RPRODUCER] ChatLabelChat — aplica/remove label numa conversa
+func (c *chatService) ChatLabelChat(data *LabelChatStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+	var ts time.Time
+	chat, ok := utils.ParseJID(data.Chat)
+	if !ok {
+		return "", errors.New("invalid chat jid")
+	}
+	if data.LabelId == "" {
+		return "", errors.New("labelId is required")
+	}
+	err = client.SendAppState(context.Background(), appstate.BuildLabelChat(chat, data.LabelId, data.Labeled))
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error label chat: %v", instance.Id, err)
+		return "", err
+	}
+	return ts.String(), nil
+}
+
+// [RPRODUCER] SendPresence — account-wide online/offline
+func (c *chatService) SendPresence(data *PresenceStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+	var ts time.Time
+	var presence types.Presence
+	switch strings.ToLower(data.Presence) {
+	case "available", "online":
+		presence = types.PresenceAvailable
+	case "unavailable", "offline":
+		presence = types.PresenceUnavailable
+	default:
+		return "", errors.New("presence must be 'available' or 'unavailable'")
+	}
+	err = client.SendPresence(context.Background(), presence)
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error send presence: %v", instance.Id, err)
+		return "", err
+	}
+	return ts.String(), nil
+}
+
+// [RPRODUCER] SendChatPresence — typing/recording em chat especifico
+func (c *chatService) SendChatPresence(data *ChatPresenceStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+	var ts time.Time
+	chat, ok := utils.ParseJID(data.Chat)
+	if !ok {
+		return "", errors.New("invalid chat jid")
+	}
+	var state types.ChatPresence
+	switch strings.ToLower(data.State) {
+	case "composing", "typing":
+		state = types.ChatPresenceComposing
+	case "paused", "stop":
+		state = types.ChatPresencePaused
+	case "recording":
+		state = types.ChatPresenceComposing
+	default:
+		return "", errors.New("state must be 'composing', 'paused' or 'recording'")
+	}
+	var media types.ChatPresenceMedia
+	switch strings.ToLower(data.Media) {
+	case "audio", "recording":
+		media = types.ChatPresenceMediaAudio
+	default:
+		media = types.ChatPresenceMediaText
+	}
+	err = client.SendChatPresence(context.Background(), chat, state, media)
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error send chat presence: %v", instance.Id, err)
+		return "", err
+	}
+	return ts.String(), nil
+}
+
+// [RPRODUCER] ChatMarkMessageRead — read receipts (duplo-check azul)
+func (c *chatService) ChatMarkMessageRead(data *MarkMessageReadStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+	var ts time.Time
+	chat, ok := utils.ParseJID(data.Chat)
+	if !ok {
+		return "", errors.New("invalid chat jid")
+	}
+	sender := chat
+	if data.Sender != "" {
+		s, ok2 := utils.ParseJID(data.Sender)
+		if ok2 {
+			sender = s
+		}
+	}
+	if len(data.MessageIds) == 0 {
+		return "", errors.New("messageIds is required")
+	}
+	ids := make([]types.MessageID, 0, len(data.MessageIds))
+	for _, id := range data.MessageIds {
+		if id != "" {
+			ids = append(ids, types.MessageID(id))
+		}
+	}
+	err = client.MarkRead(context.Background(), ids, time.Now(), chat, sender)
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error mark read: %v", instance.Id, err)
+		return "", err
+	}
+	return ts.String(), nil
+}
+
+// [RPRODUCER] ChatClearChat — limpa historico (BuildDeleteChat na whatsmeow)
+func (c *chatService) ChatClearChat(data *BodyStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+	var ts time.Time
+	chat, ok := utils.ParseJID(data.Chat)
+	if !ok {
+		return "", errors.New("invalid chat jid")
+	}
+	err = client.SendAppState(context.Background(), appstate.BuildDeleteChat(chat, time.Time{}, nil, false))
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error clear chat: %v", instance.Id, err)
+		return "", err
+	}
+	return ts.String(), nil
+}
+
+// [RPRODUCER] ChatBlock — bloqueia/desbloqueia contato
+func (c *chatService) ChatBlock(data *BlockStruct, instance *instance_model.Instance) (string, error) {
+	client, err := c.ensureClientConnected(instance.Id)
+	if err != nil {
+		return "", err
+	}
+	var ts time.Time
+	chat, ok := utils.ParseJID(data.Chat)
+	if !ok {
+		return "", errors.New("invalid chat jid")
+	}
+	var action events.BlocklistChangeAction
+	switch strings.ToLower(data.Action) {
+	case "block":
+		action = events.BlocklistChangeActionBlock
+	case "unblock":
+		action = events.BlocklistChangeActionUnblock
+	default:
+		return "", errors.New("action must be 'block' or 'unblock'")
+	}
+	_, err = client.UpdateBlocklist(context.Background(), chat, action)
+	if err != nil {
+		c.loggerWrapper.GetLogger(instance.Id).LogError("[%s] error update blocklist: %v", instance.Id, err)
+		return "", err
+	}
 	return ts.String(), nil
 }
 
