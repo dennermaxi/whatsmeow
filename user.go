@@ -470,6 +470,22 @@ func (cli *Client) GetUserDevicesContext(ctx context.Context, jids []types.JID) 
 	return cli.GetUserDevices(ctx, jids)
 }
 
+// [RPRODUCER fix 2026-06-11] InvalidateUserDevicesCache remove a entrada do cache
+//   de devices para o JID dado, forçando próximo SendMessage/GetUserDevices a
+//   re-fetchar lista fresca via usync. Motivo: reacoes saiam para uma lista
+//   stale de devices do destinatario apos reconnects/sync ruim — nem WhatsApp
+//   Web nem celular recebiam. Whatsmeow auto-invalida via "phash mismatch"
+//   warning so APOS o envio (msg ja se perdeu). Este metodo permite invalidar
+//   ANTES do envio crítico. Usado em pkg/message/service/message_service.go React.
+func (cli *Client) InvalidateUserDevicesCache(jid types.JID) {
+	if cli == nil {
+		return
+	}
+	cli.userDevicesCacheLock.Lock()
+	defer cli.userDevicesCacheLock.Unlock()
+	delete(cli.userDevicesCache, jid)
+}
+
 // GetUserDevices gets the list of devices that the given user has. The input should be a list of
 // regular JIDs, and the output will be a list of AD JIDs. The local device will not be included in
 // the output even if the user's JID is included in the input. All other devices will be included.
