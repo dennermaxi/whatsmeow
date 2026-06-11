@@ -182,6 +182,14 @@ func (m *messageService) React(data *ReactStruct, instance *instance_model.Insta
 	//   contato nunca via a reacao). Agora deixa o whatsmeow gerar um ID novo
 	//   aleatorio. O msgId target continua corretamente em `messageKey.ID` acima,
 	//   identificando qual mensagem esta sendo reagida.
+	// [RPRODUCER fix 2026-06-11 part 2] Apos validar fix acima em prod, descobrimos
+	//   que reacao tambem nao chegava no destinatario por causa de userDevicesCache
+	//   stale (warning "Server returned different participant list hash" no log
+	//   whatsmeow). Whatsmeow auto-invalida o cache APOS detectar mismatch — porem
+	//   a msg atual ja foi enviada para devices errados. Pra reacoes (criticas pra
+	//   UX), invalidamos o cache ANTES do SendMessage forcando re-fetch fresco
+	//   via usync. Custo: ~100-300ms a mais por reacao. Beneficio: reacao chega.
+	client.InvalidateUserDevicesCache(recipient)
 	response, err := client.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
 		return nil, err
