@@ -174,9 +174,15 @@ func (m *messageService) React(data *ReactStruct, instance *instance_model.Insta
 		},
 	}
 
-	response, err := client.SendMessage(context.Background(), recipient, msg, whatsmeow.SendRequestExtra{
-		ID: msgId,
-	})
+	// [RPRODUCER fix 2026-06-11] Antes passavamos `SendRequestExtra{ID: msgId}`,
+	//   mas `msgId` aqui eh o ID da MENSAGEM ALVO (sendo reagida). O SendRequestExtra.ID
+	//   eh o ID que a NOVA msg de reacao vai ter ao ser enviada — passar o mesmo
+	//   ID da target fazia o WhatsApp descartar como duplicata/replay, reacao
+	//   nunca chegava no celular do contato (sintoma: response 200 OK, mas
+	//   contato nunca via a reacao). Agora deixa o whatsmeow gerar um ID novo
+	//   aleatorio. O msgId target continua corretamente em `messageKey.ID` acima,
+	//   identificando qual mensagem esta sendo reagida.
+	response, err := client.SendMessage(context.Background(), recipient, msg)
 	if err != nil {
 		return nil, err
 	}
@@ -191,7 +197,10 @@ func (m *messageService) React(data *ReactStruct, instance *instance_model.Insta
 			IsFromMe: true,
 			IsGroup:  isGroup,
 		},
-		ID:        msgId,
+		// [RPRODUCER fix 2026-06-11] retorna o ID da REACAO (gerado pelo whatsmeow),
+		//   nao o msgId da target. Caller (backend CRM) usa esse ID pra persistir
+		//   em whatsapp_reacoes — se usasse o msgId da target geraria conflito.
+		ID:        string(response.ID),
 		Timestamp: time.Now(),
 		ServerID:  response.ServerID,
 		Type:      messageType,
